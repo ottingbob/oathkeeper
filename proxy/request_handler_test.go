@@ -49,6 +49,12 @@ func newTestRequest(u string) *http.Request {
 	return &http.Request{URL: x.ParseURLOrPanic(u), Method: "GET", Header: TestHeader}
 }
 
+func newTestRequestWithBasicAuth(u string) *http.Request {
+	headers := TestHeader.Clone()
+	headers.Add("Authorization", "Basic dXNlcm5hbWU6c2VjcmV0Cg==")
+	return &http.Request{URL: x.ParseURLOrPanic(u), Method: "GET", Header: headers}
+}
+
 func TestHandleError(t *testing.T) {
 	for k, tc := range []struct {
 		d        string
@@ -295,6 +301,7 @@ func TestRequestHandler(t *testing.T) {
 			d: "should fail because the rule is missing authn, authz, and mutator even when some pipelines are enabled",
 			setup: func() {
 				viper.Set(configuration.ViperKeyAuthenticatorNoopIsEnabled, true)
+				// TODO: These can pass with the others disabled now...
 				viper.Set(configuration.ViperKeyAuthorizerAllowIsEnabled, true)
 				viper.Set(configuration.ViperKeyMutatorNoopIsEnabled, true)
 			},
@@ -310,6 +317,7 @@ func TestRequestHandler(t *testing.T) {
 			d: "should pass",
 			setup: func() {
 				viper.Set(configuration.ViperKeyAuthenticatorNoopIsEnabled, true)
+				// TODO: These can pass with the others disabled now
 				viper.Set(configuration.ViperKeyAuthorizerAllowIsEnabled, true)
 				viper.Set(configuration.ViperKeyMutatorNoopIsEnabled, true)
 			},
@@ -452,6 +460,54 @@ func TestRequestHandler(t *testing.T) {
 			}
 
 			_, err := reg.ProxyRequestHandler().HandleRequest(tc.r, &tc.rule)
+			if tc.expectErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestRequestHandlerWithNoopAuthorizer(t *testing.T) {
+	for k, tc := range []struct {
+		d         string
+		setup     func()
+		rule      rule.Rule
+		r         *http.Request
+		expectErr bool
+	}{
+		{
+			d: "should skip other authorizers / mutators when noop is enabled",
+			setup: func() {
+				viper.Set(configuration.ViperKeyAuthenticatorNoopIsEnabled, true)
+				viper.Set(configuration.ViperKeyAuthorizerAllowIsEnabled, false)
+				viper.Set(configuration.ViperKeyMutatorNoopIsEnabled, false)
+			},
+			// TODO: Test for Basic Auth header to come through...
+			r: newTestRequestWithBasicAuth("http://localhost"),
+			rule: rule.Rule{
+				Authenticators: []rule.Handler{{Handler: "noop"}},
+				Authorizer:     rule.Handler{Handler: "allow"},
+				Mutators:       []rule.Handler{{Handler: "invalid-id"}},
+			},
+		},
+		// TODO: Could we create a test that asserts if a given handler was NOT evaluated
+		// not sure based on the current setup...
+	} {
+		t.Run(fmt.Sprintf("case=%d/description=%s", k, tc.d), func(t *testing.T) {
+
+			conf := internal.NewConfigurationWithDefaults()
+			reg := internal.NewRegistry(conf)
+
+			if tc.setup != nil {
+				tc.setup()
+			}
+
+			session, err := reg.ProxyRequestHandler().HandleRequest(tc.r, &tc.rule)
+			t.Logf("Found the session: %+v", session)
+			user, pass, ok := tc.r.BasicAuth()
+			t.Logf("Request headers: %+v, %s:%s %v", tc.r.Header, user, pass, ok)
 			if tc.expectErr {
 				require.Error(t, err)
 			} else {
